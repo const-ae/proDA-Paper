@@ -11,10 +11,15 @@ Both can be found in the `data/` folder.
 
 There are three additional folders that contain R markdown notebook that were used to generate the plots
 for the paper:
-* `approach_intuition` contains the code to give an overview of the ideas underlying `proDA`.
+* `approach_intuition` contains the code to give an overview of the ideas underlying `proDA`
+    - [Mean-variance relation](https://htmlpreview.github.io/?https://github.com/const-ae/proDA-Paper/blob/master/approach_intuition/mean_variance_relation.nb.html)
+    - [Location of missing values](https://htmlpreview.github.io/?https://github.com/const-ae/proDA-Paper/blob/master/approach_intuition/missing_value_location.nb.html)
+    - [Probabilistic dropout model](https://htmlpreview.github.io/?https://github.com/const-ae/proDA-Paper/blob/master/approach_intuition/probabilistic_dropout_model.nb.html)
 * `compare_performance` contains the code to run `DEP`, `QPROT`, `Perseus`, and `proDA` on the
   de Graaf data and make the validation and comparison plots
+    - [Performance comparison notebook](https://htmlpreview.github.io/?https://github.com/const-ae/proDA-Paper/blob/master/compare_performance/compare_performance.nb.html)
 * `ubiquitination` contains the code that was used to analyze the Ubiquitination data
+    - [Analysis notebook](https://github.com/const-ae/proDA-Paper/blob/master/ubiquitination/Ubiquitination_Analysis.nb.html)
 
 
 
