@@ -1,0 +1,178 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+
+```{r}
+
+library(tidyverse)
+library(cowplot)
+
+
+```
+
+
+Load the data from the de Graaf et al. (2014) pubication that studied the effect of 
+prostaglandin E2 (PGE2) on phosphorylation at different timepoints. The data was
+uploaded to the ProteomeXchange with the identifier PXD000293. I have extracted
+the proteinGroups MaxQuant output file. I will now load that file
+
+```{r}
+
+full_data <- read_tsv(
+  "../data/degraaf_phosphorylation/degraaf_proteinGroups.txt",
+  col_types = list(
+    `LFQ intensity OR8_5min_C3` = "n",
+    `LFQ intensity OR9_10min_B1` = "n",
+    `LFQ intensity OR9_10min_A2` = "n",
+    `LFQ intensity OR9_30min_B3` = "n",
+    `LFQ intensity OR9_5min_B3` = "n",
+    `LFQ intensity OR9_10min_A2` = "n",
+    `LFQ intensity OR9_10min_A3` = "n",
+    Reverse = "c"
+  )
+) 
+
+tidy_data <- full_data %>%
+  dplyr::select(ProteinID=`Protein IDs`, starts_with("LFQ Intensity ")) %>%
+  gather(Sample, Intensity, starts_with("LFQ intensity ")) %>%
+  mutate(MS_Run = str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,2]) %>% 
+  mutate(Timepoint = as.numeric(str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,3])) %>% 
+  mutate(BioReplicate = str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,4]) %>% 
+  mutate(TechReplicate = as.numeric(str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,5])) %>% 
+  mutate(SampleName = paste0("t", str_pad(Timepoint, width=2, pad="0"),
+                             "_", BioReplicate, "_Rep", TechReplicate,  "_", MS_Run)) 
+
+```
+
+
+
+
+
+
+```{r}
+sample_subset <- paste0("t00_", c("A_Rep2", "C_Rep2", "C_Rep3",  "A_Rep1", "C_Rep1", "B_Rep3"), "_OR8")
+
+data <- tidy_data %>%
+  filter(SampleName %in% sample_subset) %>%
+  mutate(Intensity = ifelse(Intensity == 0, NA, log2(Intensity))) %>%
+  select(ProteinID, SampleName, Intensity) %>%
+  spread(SampleName, Intensity) %>%
+  column_to_rownames("ProteinID") %>%
+  as.matrix() 
+
+
+data_norm <- proDD::median_normalization(data)
+```
+
+
+```{r}
+color_lookup <- c(many_missing = "#f4655c", few_missing = "#6d3480")
+```
+
+
+
+
+```{r}
+density_data <- data.frame(value=c(data_norm), nobs=rep(rowSums(!is.na(data_norm)), times=ncol(data_norm))) %>%
+  filter(! is.na(value)) %>%
+  mutate(many_missing=nobs < 5) 
+
+density_ratio <- bind_rows(lapply(1:100, function(idx){
+  dens_mis <- density_data %>%
+    sample_frac(replace=TRUE) %>%
+    filter(many_missing) %>%
+    pull(value) %>%
+    density(from=10, to=30, n=1001, adjust=3)
+
+  dens_obs <- density_data %>%
+    sample_frac(replace=TRUE) %>%
+    filter(! many_missing) %>%
+    pull(value) %>%
+    density(from=10, to=30, n=1001, adjust=3)
+    
+  data.frame(iter=idx, x=dens_mis$x, dmis=dens_mis$y, dobs = dens_obs$y) %>%
+    mutate(ratio=dmis / (dmis + dobs))
+}))
+
+
+
+dropout_hist <- density_data %>%
+  ggplot(aes(x=value)) +
+    geom_histogram(aes(y= ..ncount.. ), fill="#BBBBBB") +
+    geom_density(aes(color=many_missing, fill=many_missing, 
+                     y=..count.. / max(..count..)), alpha=0.4, adjust=3) +
+    geom_line(data=density_ratio, aes(x=x, y=ratio, group=iter), alpha=0.01) +
+    ggrepel::geom_label_repel(data = data_frame(x = 22, y=0.35, text = "5-6 Observations"),
+                              aes(x=x, y=y, label=text), color = color_lookup["few_missing"],
+                              text.colour = "black", size=5, nudge_x = 4, nudge_y = 0.2)+
+    ggrepel::geom_label_repel(data = data_frame(x = 16.5, y=0.2, text = "1-4 Observations"),
+                              aes(x=x, y=y, label=text), color = color_lookup["many_missing"],
+                              text.colour = "black", size=5, nudge_x = -3, nudge_y = 0.2, anchor.side = "bottom")+
+    ggrepel::geom_label_repel(data = data_frame(x = 15.5, y=0.92, text = "Density Ratio"),
+                              aes(x=x, y=y, label=text), color = "black",
+                              text.colour = "black", size=5, nudge_x = -1, nudge_y = -0.1, anchor.side = "top")+
+    xlab("Intensity") + ylab("") + xlim(13, 28) + 
+    scale_fill_manual(values = c(`TRUE` = as.character(color_lookup["many_missing"]), `FALSE` = as.character(color_lookup["few_missing"]))) +
+    scale_color_manual(values = c(`TRUE` = as.character(color_lookup["many_missing"]), `FALSE` = as.character(color_lookup["few_missing"]))) +
+    guides(fill=FALSE, color=FALSE) +
+    NULL
+
+
+dropout_hist
+```
+
+
+
+
+
+
+```{r}
+density_data %>%
+  # mutate(nobs_cut = cut(nobs, breaks=10, labels=FALSE)) %>%
+  mutate(nobs_cut = nobs) %>%
+  ggplot(aes(x=value, group=as.factor(nobs_cut), color=nobs_cut)) +
+    stat_ecdf() +
+    scale_color_viridis_c(name = "Observations per row", option = "magma", direction=-1, begin = 0.2, end=0.8) +
+    xlab("Intensity") + ylab("") +
+    ggtitle("ECDF by Observations") +
+    NULL
+```
+
+
+
+```{r}
+density_ridge_plot <- density_data %>%
+  group_by(nobs) %>%
+  do(ggplot2:::compute_density(.$value, NULL, from=12, to=30)) %>%
+  ungroup() %>%
+  mutate(many_missing = nobs < 5) %>%
+  dplyr::rename(Intensity = x) %>%
+  ggplot(aes(x=Intensity, y=as.factor(nobs), height = ndensity, fill=many_missing)) +
+    # ggridges::stat_density_ridges(quantile_lines = TRUE, quantiles = 2) +
+    ggridges::geom_density_ridges(stat= "identity", quantile_lines = TRUE, quantiles=2, vline_color="black") +
+    scale_fill_manual(values = c(`TRUE` = as.character(color_lookup["many_missing"]), 
+                                 `FALSE` = as.character(color_lookup["few_missing"]))) +
+    guides(fill = "none") +
+    xlab("Intensity") + ylab("Protein detected in __ samples") +
+    xlim(13, 28) + 
+    NULL
+
+density_ridge_plot
+```
+
+
+
+
+```{r}
+plot_grid(density_ridge_plot, dropout_hist, labels = c("A", "B"), align="vh")
+ggsave("plots/prob_drop_figure.pdf", width=12, height=4)
+```
+
+
+
+
+

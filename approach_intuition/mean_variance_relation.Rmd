@@ -1,0 +1,101 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+
+library(tidyverse)
+library(cowplot)
+
+
+```
+
+
+Load the data from the de Graaf et al. (2014) pubication that studied the effect of 
+prostaglandin E2 (PGE2) on phosphorylation at different timepoints. The data was
+uploaded to the ProteomeXchange with the identifier PXD000293. I have extracted
+the proteinGroups MaxQuant output file. I will now load that file
+
+```{r}
+
+full_data <- read_tsv(
+  "../data/degraaf_phosphorylation/degraaf_proteinGroups.txt",
+  col_types = list(
+    `LFQ intensity OR8_5min_C3` = "n",
+    `LFQ intensity OR9_10min_B1` = "n",
+    `LFQ intensity OR9_10min_A2` = "n",
+    `LFQ intensity OR9_30min_B3` = "n",
+    `LFQ intensity OR9_5min_B3` = "n",
+    `LFQ intensity OR9_10min_A2` = "n",
+    `LFQ intensity OR9_10min_A3` = "n",
+    Reverse = "c"
+  )
+) 
+
+tidy_data <- full_data %>%
+  dplyr::select(ProteinID=`Protein IDs`, starts_with("LFQ Intensity ")) %>%
+  gather(Sample, Intensity, starts_with("LFQ intensity ")) %>%
+  mutate(MS_Run = str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,2]) %>% 
+  mutate(Timepoint = as.numeric(str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,3])) %>% 
+  mutate(BioReplicate = str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,4]) %>% 
+  mutate(TechReplicate = as.numeric(str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,5])) %>% 
+  mutate(SampleName = paste0("t", str_pad(Timepoint, width=2, pad="0"),
+                             "_", BioReplicate, "_Rep", TechReplicate,  "_", MS_Run)) 
+
+
+```
+
+
+
+
+Mean Variance relation
+
+```{r}
+non_logged_relation_plot <- tidy_data %>%
+  mutate(Intensity = ifelse(Intensity == 0, NA, Intensity)) %>%
+  group_by(ProteinID, MS_Run, Timepoint) %>%
+  summarize(nobs = sum(!is.na(Intensity)),
+    mean = mean(Intensity, na.rm=TRUE),
+    var = var(Intensity, na.rm=TRUE)) %>%
+  filter(nobs > 2) %>%
+  ggplot(aes(x=mean, y=var)) +
+    geom_point(alpha=0.1) +
+    geom_smooth() +
+    # geom_smooth(method = "lm", color="red") +
+    scale_x_log10() +
+    scale_y_log10() +
+    ggtitle("raw data") +
+    xlab("mean") + ylab("variance") +
+    NULL
+
+logged_relation_plot <- tidy_data %>%
+  mutate(Intensity = ifelse(Intensity == 0, NA, log2(Intensity))) %>%
+  group_by(ProteinID, MS_Run, Timepoint) %>%
+  summarize(nobs = sum(!is.na(Intensity)),
+    mean = mean(Intensity, na.rm=TRUE),
+    var = var(Intensity, na.rm=TRUE)) %>%
+  filter(nobs > 2) %>%
+  ggplot(aes(x=mean, y=var)) +
+    geom_point(alpha=0.1) +
+    geom_smooth() +
+    # scale_x_log10() +
+    scale_y_log10() +
+    ggtitle("log transformed data") +
+    xlab("mean") + ylab("variance") +
+    NULL
+
+
+cowplot::plot_grid(non_logged_relation_plot, logged_relation_plot,
+                   labels = c("A", "B"), nrow=2)
+ggsave("plots/mean_variance_relation.pdf", width=5, height=5)
+```
+
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
+

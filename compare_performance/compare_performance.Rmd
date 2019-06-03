@@ -1,0 +1,806 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+
+
+
+```{r}
+
+library(tidyverse)
+library(proDA)
+library(DEP)
+library(SummarizedExperiment)
+library(cowplot)
+source("run_dep.R")
+source("run_proDA.R")
+source("run_qprot.R")
+source("run_perseus.R")
+```
+
+
+Load the data from the de Graaf et al. (2014) pubication that studied the effect of 
+prostaglandin E2 (PGE2) on phosphorylation at different timepoints. The data was
+uploaded to the ProteomeXchange with the identifier PXD000293. I have extracted
+the proteinGroups MaxQuant output file. I will now load that file
+
+```{r}
+
+full_data <- read_tsv(
+  "../data/degraaf_phosphorylation/degraaf_proteinGroups.txt",
+  col_types = list(
+    `LFQ intensity OR8_5min_C3` = "n",
+    `LFQ intensity OR9_10min_B1` = "n",
+    `LFQ intensity OR9_10min_A2` = "n",
+    `LFQ intensity OR9_30min_B3` = "n",
+    `LFQ intensity OR9_5min_B3` = "n",
+    `LFQ intensity OR9_10min_A2` = "n",
+    `LFQ intensity OR9_10min_A3` = "n"
+  )
+) 
+
+tidy_data <- full_data %>%
+  dplyr::select(ProteinID=`Protein IDs`, starts_with("LFQ Intensity ")) %>%
+  gather(Sample, Intensity, starts_with("LFQ intensity ")) %>%
+  mutate(MS_Run = str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,2]) %>% 
+  mutate(Timepoint = as.numeric(str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,3])) %>% 
+  mutate(BioReplicate = str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,4]) %>% 
+  mutate(TechReplicate = as.numeric(str_match(Sample, "^LFQ intensity (OR\\d)_(\\d+)min_([A-C])(\\d)$")[,5])) %>% 
+  mutate(SampleName = paste0("t", str_pad(Timepoint, width=2, pad="0"),
+                             "_", BioReplicate, "_Rep", TechReplicate,  "_", MS_Run)) 
+
+tidy_data
+
+```
+
+
+
+
+```{r}
+
+data <- tidy_data %>%
+  filter(Timepoint == 0) %>%
+  mutate(Intensity = ifelse(Intensity == 0, NA, log2(Intensity))) %>%
+  select(ProteinID, SampleName, Intensity) %>%
+  spread(SampleName, Intensity) %>%
+  column_to_rownames("ProteinID") %>%
+  as.matrix() 
+
+data <- data[rowSums(is.na(data)) < 18, ]
+
+data_norm <- median_normalization(data)
+
+
+
+annotation_df <- tidy_data %>%
+  filter(Timepoint == 0) %>%
+  select(SampleName, BioReplicate, TechReplicate, MS_Run) %>%
+  distinct() %>%
+  mutate(TechReplicate = as.factor(TechReplicate)) %>%
+  arrange(BioReplicate, TechReplicate) %>%
+  as.data.frame() %>%
+  column_to_rownames("SampleName")
+
+
+```
+
+
+
+```{r}
+data_for_plot <- data_norm
+data_for_plot[is.na(data_for_plot)] <- 0
+pheatmap::pheatmap(data_for_plot, show_rownames = FALSE, 
+                   annotation_col = annotation_df)
+
+```
+
+
+
+```{r}
+set.seed(1)
+zero_parameters <- proDA(data_norm, col_data = annotation_df, verbose=TRUE)
+
+```
+
+```{r}
+write_rds(zero_parameters, "tmp/de_graaf/zero_info_parameters.RDS")
+zero_parameters <- read_rds("tmp/de_graaf/zero_info_parameters.RDS")
+```
+
+
+
+```{r}
+sample_distances <- dist_approx(zero_parameters)$mean
+protein_distances <- dist_approx( zero_parameters, by_sample = FALSE)$mean
+```
+
+```{r}
+cowplot::plot_grid(pheatmap::pheatmap(data_norm, show_rownames = FALSE, 
+                   cluster_rows = hclust(protein_distances), 
+                   cluster_cols = hclust(sample_distances),
+                   annotation_col = annotation_df, silent=TRUE)$gtable)
+
+
+as.data.frame(cmdscale(sample_distances)) %>%
+  rownames_to_column("Names") %>%
+  inner_join(rownames_to_column(annotation_df, "Names")) %>%
+  ggplot(aes(x = V1, y=V2, color=MS_Run, shape = BioReplicate)) +
+    geom_point(size=4) +
+    ggrepel::geom_text_repel(aes(label = Names), point.padding = 0.1, box.padding = 0.3, size=3) +
+    coord_fixed()
+```
+
+
+```{r}
+annotation_df <- tidy_data %>%
+  filter(Timepoint == 0) %>%
+  select(SampleName, BioReplicate, TechReplicate, MS_Run) %>%
+  distinct() %>%
+  mutate(TechReplicate = as.factor(TechReplicate)) %>%
+  arrange(BioReplicate, TechReplicate) %>%
+  as.data.frame() %>%
+  column_to_rownames("SampleName")
+
+
+sel_samples_3v3 <- list(Syn_Cond1 = paste0("t00_", c("A_Rep2", "C_Rep2", "C_Rep3"), "_OR8"),
+                        Syn_Cond2 = paste0("t00_", c("A_Rep1", "C_Rep1", "B_Rep3"), "_OR8"))
+sel_samples_4v4 <- list(Syn_Cond1 = paste0("t00_", c("B_Rep3_OR9", "B_Rep3_OR8", "C_Rep3_OR8", "A_Rep2_OR8")),
+                        Syn_Cond2 = paste0("t00_", c("C_Rep2_OR8", "C_Rep2_OR9", "A_Rep2_OR9", "B_Rep2_OR8")))
+sel_samples_6v6 <- list(Syn_Cond1 =c("t00_A_Rep3_OR8", "t00_C_Rep2_OR8", "t00_C_Rep3_OR9",
+                                     "t00_A_Rep2_OR9", "t00_B_Rep2_OR9", "t00_B_Rep1_OR8"),
+                        Syn_Cond2 =c("t00_C_Rep1_OR8", "t00_A_Rep3_OR9", "t00_A_Rep1_OR9",
+                                     "t00_B_Rep2_OR8", "t00_B_Rep1_OR9", "t00_B_Rep3_OR8"))
+
+cond1_label <- "Condition 1"
+cond2_label <- "Condition 2"
+neutal_label <- "Ignored"
+annotation_syn_cond <- data.frame(
+  `Comparison_3v3` = case_when(
+    colnames(data_norm) %in% sel_samples_3v3$Syn_Cond1 ~ cond1_label,
+    colnames(data_norm) %in% sel_samples_3v3$Syn_Cond2 ~ cond2_label,
+    TRUE ~ neutal_label
+  ),
+  `Comparison_4v4` = case_when(
+    colnames(data_norm) %in% sel_samples_4v4$Syn_Cond1 ~ cond1_label,
+    colnames(data_norm) %in% sel_samples_4v4$Syn_Cond2 ~ cond2_label,
+    TRUE ~ neutal_label
+  ),
+  `Comparison_6v6` = case_when(
+    colnames(data_norm) %in% sel_samples_6v6$Syn_Cond1 ~ cond1_label,
+    colnames(data_norm) %in% sel_samples_6v6$Syn_Cond2 ~ cond2_label,
+    TRUE ~ neutal_label
+  ),
+  row.names = colnames(data_norm)
+)
+
+cowplot::plot_grid(pheatmap::pheatmap(data_norm, show_rownames = FALSE, 
+                   cluster_rows = hclust(protein_distances), 
+                   cluster_cols = hclust(sample_distances),
+                   color = viridis::magma(n=100),
+                   annotation_col = annotation_syn_cond, 
+                   annotation_colors = list(
+                     Comparison_3v3 = c(`Condition 1` = "#b2df8a", `Condition 2` = "#1f78b4", Ignored = "grey90"),
+                     Comparison_4v4 = c(`Condition 1` = "#b2df8a", `Condition 2` = "#1f78b4", Ignored = "grey90"),
+                     Comparison_6v6 = c(`Condition 1` = "#b2df8a", `Condition 2` = "#1f78b4", Ignored = "grey90")
+                   ),
+                   annotation_legend = c(TRUE, FALSE, FALSE),
+                   silent=TRUE)$gtable)
+ggsave("plots/de_graaf_heatmap.pdf", width=8, height=6)
+```
+
+
+
+
+
+
+# Performance Comparison
+
+Helper Method
+
+```{r}
+tidy_FDR <- function(data, predicted_FDR, known_class, ticks = ppoints(100)){
+  
+  # use tidy eval
+  predicted_FDR <- rlang::enquo(predicted_FDR)
+  known_class <- rlang::enquo(known_class)
+
+  FDR_values <- rlang::eval_tidy(predicted_FDR, data)
+  known_values <- rlang::eval_tidy(known_class, data)
+  
+  if(! is.logical(known_values)){
+    stop("values in known_class must be of type logical.")
+  }
+  if(! is.numeric(FDR_values)){
+    stop("values in known_class must be of type logical.")
+  }
+  
+  if(any(FDR_values > 1, na.rm=TRUE) | any(FDR_values < 0, na.rm=TRUE)){
+    stop("value in predicted_FDR must be between zero and one.")
+  }
+  
+  map_dfr(ticks, function(thres){
+    tab <- table(factor(FDR_values < thres, levels = c("TRUE", "FALSE")), 
+                  factor(known_values, levels = c("TRUE", "FALSE")))
+    tibble(DesiredFDR = thres, TP = tab[1,1], FP=tab[1,2], 
+           ObservedFDR = ifelse(TP == 0 & FP == 0, 0, FP / (TP + FP)))
+  })
+  
+}
+
+
+```
+
+
+
+```{r}
+shuffle_dataset <- function(data, frac_changed, comparison = c("3v3", "4v4", "6v6")) {
+  comparison <- match.arg(comparison, c("3v3", "4v4", "6v6"))
+
+  if(comparison == "3v3"){
+    # Select 3 vs 3 columns that show no change if 0% are changed
+    selected_columns <-  paste0("t00_", c("A_Rep2", "C_Rep2", "C_Rep3",    # Cond 1
+                                          "A_Rep1", "C_Rep1", "B_Rep3"),   # Cond 2
+                                "_OR8")
+    new_experimental_design <- c(rep("SynCond_1", 3), rep("SynCond_2", 3))
+  }else if(comparison == "4v4"){
+    # Select 4 vs 4 columns that show no change if 0% are changed
+    selected_columns <-  paste0("t00_", c("B_Rep3_OR9", "B_Rep3_OR8", "C_Rep3_OR8", "A_Rep2_OR8",    # Cond 1
+                                          "C_Rep2_OR8", "C_Rep2_OR9", "A_Rep2_OR9", "B_Rep2_OR8")    # Cond 2
+                                )
+    new_experimental_design <- c(rep("SynCond_1", 4), rep("SynCond_2", 4))
+  }else{
+    selected_columns <-  c("t00_A_Rep3_OR8", "t00_C_Rep2_OR8", "t00_C_Rep3_OR9", 
+                           "t00_A_Rep2_OR9", "t00_B_Rep2_OR9", "t00_B_Rep1_OR8",   # Cond1
+                           "t00_C_Rep1_OR8", "t00_A_Rep3_OR9", "t00_A_Rep1_OR9", 
+                           "t00_B_Rep2_OR8", "t00_B_Rep1_OR9", "t00_B_Rep3_OR8")   # Cond2
+    new_experimental_design <- c(rep("SynCond_1", 6), rep("SynCond_2", 6))
+  }
+  
+  data_changed <- data[, selected_columns]
+  
+
+  changed <- rep(FALSE, nrow(data_changed))
+    changed[sample(seq_len(nrow(data_changed)), size=round(nrow(data_changed) * frac_changed))] <- TRUE
+  changed_indices <- which(changed)
+  
+  data_changed[changed_indices, new_experimental_design == "SynCond_1"] <- 
+    data_changed[sample(changed_indices), new_experimental_design == "SynCond_1"]
+  
+  list(
+    data = data_changed,
+    experimental_design = new_experimental_design,
+    changed = changed
+  )
+}
+```
+
+
+
+
+
+
+```{r}
+imp_methods <- list(
+  list("zero"),
+  list("QRILC"),
+  list("knn", colmax = 0.95),
+  list("MinDet"),
+  list("MinProb")
+)
+
+```
+
+
+
+
+Beautiful plot
+
+```{r}
+color_mapping <- c(proDA = "#5a8c08", QPROT = "#fb8072", Perseus = "#386cb0",
+                   `knn-limma`="#5B127F", `QRILC-limma`="#D070FF", `MinDet-limma`="#B724FF",
+                   `MinProb-limma`="#68387F", `zero-limma`="#921DCC")
+background_painter <- data.frame(DesiredFDR=c(0, 0.1, 0.2), ObservedFDR=c(0, 0.1, 0.2))
+```
+
+
+
+```{r}
+
+make_calib_and_perf_plot <- function(tp_fp_df){
+
+  calib_plot <- tp_fp_df %>%
+    ggplot(aes(x=DesiredFDR, y=ObservedFDR, group=method, color=method)) +
+      geom_ribbon(data=background_painter, aes(ymax=ObservedFDR), ymin=0, color="white", fill="#91bfdb", alpha=0.1, group=99) +
+      geom_ribbon(data=background_painter, aes(ymin=ObservedFDR), ymax=1, color="white", fill="#fc8d59", alpha=0.1, group=98) +
+      annotate("text", x=0.085, y=0.03, hjust=0, label="conservative", size=5, alpha=0.5) +
+      annotate("text", x=0.03, y=0.085, hjust=0, angle = 90, label="anti-conservative", size=5, alpha=0.5) +
+      annotate("text", x=0.15, y=0.16, hjust=0, angle=45, label="optimal", alpha=0.5, size=5) +
+      geom_abline(intercept=0, slope=1, size=2, color="grey") +
+      geom_line() +
+      geom_line(data=. %>% filter(method == "proDA"), size=1.5, color=color_mapping["proDA"]) +
+      ggrepel::geom_label_repel(data=. %>% 
+                     filter(DesiredFDR == max(DesiredFDR)),
+                aes(label=nice_label, color= method),
+                text.color = "black", segment.colour = "lightgrey", 
+                anchor.side = "left", size=5,
+                direction="y", hjust=1, xlim=c(0.215, NA)) +
+      scale_color_manual(values= color_mapping,  guide="none") + 
+      scale_x_continuous(breaks =  c(0, 0.05, 0.1, 0.15, 0.2), 
+                         labels =  c("0", "0.05", "0.10", "0.15", "0.20"),
+                         expand = expand_scale(add = 0.001, 0)) +
+      scale_y_continuous(breaks =  c(0, 0.05, 0.1, 0.15, 0.2), 
+                         labels =  c("0", "0.05", "0.10", "0.15", "0.20"),
+                         expand = expand_scale(add = c(0.001, 0))) +
+      lemon::coord_flex_fixed(xlim = c(0, 0.3), ylim=c(0,0.2), 
+                              bottom = lemon::capped_horizontal("right", gap=0)) +
+      xlab(paste0("Desired FDR", paste0(rep(" ", 32), collapse = ""))) + ylab("Actual FDR")
+  
+  perf_plot <- tp_fp_df %>%
+    ggplot(aes(x=DesiredFDR, y=TP, group=method, color=method)) +
+      geom_line() +
+      geom_line(data=. %>% filter(method == "proDA"), size=1.5, color=color_mapping["proDA"]) +
+      ggrepel::geom_label_repel(data=. %>% 
+                     filter(DesiredFDR == max(DesiredFDR)),
+                aes(label=nice_label, color= method),
+                text.color = "black", segment.colour = "lightgrey", 
+                anchor.side = "left", size=5,
+                direction="y", hjust=1, xlim=c(0.215, NA)) +
+      scale_color_manual(values= color_mapping,  guide="none") + 
+      scale_x_continuous(breaks =  c(0, 0.05, 0.1, 0.15, 0.2), 
+                         labels =  c("0", "0.05", "0.10", "0.15", "0.20")) +
+      ylim(0, NA) +
+      lemon::coord_capped_cart(xlim = c(0, 0.3), gap = 0, 
+                              expand = expand_scale(add = c(0.01, 0.1)),
+                              bottom='right') +
+      xlab(paste0("Desired FDR", paste0(rep(" ", 32), collapse = ""))) + ylab("True Positives") 
+  list(calib_plot, perf_plot)
+}
+
+```
+
+
+
+
+
+```{r}
+run_tools <- function(perc_changed, comparison, methods = c("proDA", "DEP", "QPROT", "Perseus")){
+  
+  if(! exists("data_norm")){
+    stop("data_norm variable not yet initialized")
+  }
+  if("DEP" %in% methods && ! exists("imp_methods")){
+    stop("imp_methods variable not yet initialized")
+  }
+  
+  set.seed(1)
+  shuf_df <- shuffle_dataset(data_norm, perc_changed, comparison = comparison)
+  
+  if("proDA" %in% methods){
+    proDA_result <- run_proDA(shuf_df$data,
+                              shuf_df$experimental_design, verbose=TRUE)
+    proDA_result_df <- as_tibble(proDA_result$result) %>%
+      mutate(method = "proDA",
+             changed = shuf_df$changed)  %>% 
+      select(name, pval, adj_pval, diff, method, changed)
+  }else{
+    proDA_result_df <- NULL
+  }
+
+  if("DEP" %in% methods){
+    dep_result_df <- map_dfr(imp_methods, function(imp_met){
+      print(paste0("Do ", imp_met[[1]]))
+      tmp <- do.call(run_dep, c(list(shuf_df$data,
+                                     experimental_design = shuf_df$experimental_design,
+                     imputation_method = imp_met[[1]]), imp_met[-1]))
+      tmp$method <- paste0(imp_met[[1]], "-limma")
+      tmp$changed <- shuf_df$changed
+      tmp
+    }) %>%
+    select(name, pval, adj_pval, diff, method, changed)
+  }else{
+    dep_result_df <- NULL
+  }
+  
+  if("QPROT" %in% methods){
+    qprot_result <- run_qprot(shuf_df$data[, shuf_df$experimental_design == "SynCond_1"],
+                              shuf_df$data[, shuf_df$experimental_design == "SynCond_2"])
+    qprot_result_df <- as_tibble(qprot_result) %>%
+      transmute(name=Protein, pval = pnorm(Zstatistic), adj_pval = fdr, diff=LogFoldChange) %>%
+      mutate(pval = pmin(pval, 1-pval) * 2) %>%
+      mutate(method = "QPROT",
+             changed = shuf_df$changed) %>%
+      select(name, pval, adj_pval, diff, method, changed)
+  }else{
+    qprot_result_df <- NULL
+  }
+
+  if("Perseus" %in% methods){
+    perseus_result<- run_perseus(shuf_df$data, tag = paste0(perc_changed * 100, "_", comparison), 
+                                 return_null_if_missing = TRUE)
+    if(is.null(perseus_result)){
+      perseus_result_df <- NULL
+    }else{
+      perseus_result_df <- as_tibble(perseus_result) %>%
+        mutate(method = "Perseus",
+               changed = shuf_df$changed)  %>%
+        select(name, pval, adj_pval, diff, method, changed) 
+    }
+  }else{
+    perseus_result_df <- NULL
+  }
+
+  null_df <- data.frame(method = character(0),
+                        name = character(0),
+                        pval = numeric(0),
+                        adj_pval = numeric(0),
+                        diff = numeric(0),
+                        changed = logical(0),
+                        stringsAsFactors = FALSE)
+                        
+  res_df <- bind_rows(list(null_df, dep_result_df ,
+    proDA_result_df,
+    qprot_result_df ,
+    perseus_result_df))
+  
+  list(shuf_df = shuf_df, res_df = res_df)
+}
+
+run_performance_comparison <- function(perc_changed, comparison,
+                                       methods = c("proDA", "DEP", "QPROT", "Perseus")){
+  run_tools(perc_changed, comparison, methods)$res_df %>%
+    group_by(method) %>%
+    do({tidy_FDR(., adj_pval, changed, ticks = ppoints(101) * 0.2)}) %>%
+    mutate(nice_label = case_when(
+      method == "zero-limma" ~ "DEP: Zero",
+      method == "knn-limma" ~ "DEP: KNN",
+      str_detect(method, "limma") ~ paste0("DEP: ", str_remove(method, "-limma")),
+      TRUE ~ method
+    ))
+}
+
+
+```
+
+
+
+
+
+
+
+```{r}
+tp_df_5_6v6 <- run_performance_comparison(perc_changed = 0.05, comparison = "6v6", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_10_6v6 <- run_performance_comparison(perc_changed = 0.1, comparison = "6v6", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_20_6v6 <- run_performance_comparison(perc_changed = 0.2, comparison = "6v6", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_30_6v6 <- run_performance_comparison(perc_changed = 0.3, comparison = "6v6", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+
+tp_df_5_4v4 <- run_performance_comparison(perc_changed = 0.05, comparison = "4v4", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_10_4v4 <- run_performance_comparison(perc_changed = 0.1, comparison = "4v4", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_20_4v4 <- run_performance_comparison(perc_changed = 0.2, comparison = "4v4", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_30_4v4 <- run_performance_comparison(perc_changed = 0.3, comparison = "4v4", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+
+tp_df_5_3v3 <- run_performance_comparison(perc_changed = 0.05, comparison = "3v3", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_10_3v3 <- run_performance_comparison(perc_changed = 0.1, comparison = "3v3", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_20_3v3 <- run_performance_comparison(perc_changed = 0.2, comparison = "3v3", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_30_3v3 <- run_performance_comparison(perc_changed = 0.3, comparison = "3v3", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+```
+
+
+
+```{r}
+saveRDS(list(
+  tp_df_5_6v6=tp_df_5_6v6,tp_df_10_6v6=tp_df_10_6v6,tp_df_20_6v6=tp_df_20_6v6,tp_df_30_6v6=tp_df_30_6v6,
+  tp_df_5_4v4=tp_df_5_4v4,tp_df_10_4v4=tp_df_10_4v4,tp_df_20_4v4=tp_df_20_4v4,tp_df_30_4v4=tp_df_30_4v4,
+  tp_df_5_3v3=tp_df_5_3v3,tp_df_10_3v3=tp_df_10_3v3,tp_df_20_3v3=tp_df_20_3v3,tp_df_30_3v3=tp_df_30_3v3),
+  "tmp/de_graaf/3v3_4v4_6v6-results.RDS")
+```
+
+
+```{r}
+
+all_tp_df <- readRDS("tmp/de_graaf/3v3_4v4_6v6-results.RDS")
+
+tp_df_5_6v6 <- rbind(all_tp_df$tp_df_5_6v6)
+tp_df_5_4v4 <- rbind(all_tp_df$tp_df_5_4v4)
+tp_df_5_3v3 <- rbind(all_tp_df$tp_df_5_3v3)
+tp_df_10_6v6 <- rbind(all_tp_df$tp_df_10_6v6)
+tp_df_10_4v4 <- rbind(all_tp_df$tp_df_10_4v4)
+tp_df_10_3v3 <- rbind(all_tp_df$tp_df_10_3v3)
+tp_df_20_6v6 <- rbind(all_tp_df$tp_df_20_6v6)
+tp_df_20_4v4 <- rbind(all_tp_df$tp_df_20_4v4)
+tp_df_20_3v3 <- rbind(all_tp_df$tp_df_20_3v3)
+tp_df_30_6v6 <- rbind(all_tp_df$tp_df_30_6v6)
+tp_df_30_4v4 <- rbind(all_tp_df$tp_df_30_4v4)
+tp_df_30_3v3 <- rbind(all_tp_df$tp_df_30_3v3)
+```
+
+
+
+```{r}
+
+all_plots <- lapply(list(tp_df_5_6v6, tp_df_10_6v6, tp_df_20_6v6, tp_df_30_6v6,
+                         tp_df_5_4v4, tp_df_10_4v4, tp_df_20_4v4, tp_df_30_4v4,
+                         tp_df_5_3v3, tp_df_10_3v3, tp_df_20_3v3, tp_df_30_3v3), 
+                    make_calib_and_perf_plot)
+
+```
+
+
+
+```{r}
+annotation_box <- function(perc){
+  ggdraw() +
+    draw_grob(grid::rectGrob(just="top", y=1, height=0.85, width=0.5 ,gp=grid::gpar(fill="grey80", lty=0))) +
+    draw_text(paste0(perc, "% changed"), y=0.6, angle = 90) 
+}
+
+```
+
+
+
+```{r}
+set.seed(1)
+pl_6v6 <- plot_grid(ggdraw() + draw_text("6 vs 6 samples", size=20, fontface = "bold"),
+    plot_grid(
+      plot_grid(annotation_box(5),
+          plot_grid(plotlist = all_plots[[1]], labels=c("A", "B")),
+      rel_widths = c(1, 10), nrow=1),
+      plot_grid(annotation_box(10),
+          plot_grid(plotlist = all_plots[[2]], labels=c("C", "D")),
+      rel_widths = c(1, 10), nrow=1),
+      plot_grid(annotation_box(20),
+          plot_grid(plotlist = all_plots[[3]], labels=c("E", "F")),
+      rel_widths = c(1, 10), nrow=1),
+      plot_grid(annotation_box(30),
+          plot_grid(plotlist = all_plots[[4]], labels=c("G", "H")),
+      rel_widths = c(1, 10), nrow=1), ncol=1),
+rel_heights = c(1, 20), ncol=1)
+ggplot2::ggsave("plots/calib_perf_plot-6v6.pdf", pl_6v6, width = 14, height=16)
+
+pl_4v4 <- plot_grid(ggdraw() + draw_text("4 vs 4 samples", size=20, fontface = "bold"),
+    plot_grid(
+      plot_grid(annotation_box(5),
+          plot_grid(plotlist = all_plots[[5]], labels=c("A", "B")),
+      rel_widths = c(1, 10), nrow=1),
+      plot_grid(annotation_box(10),
+          plot_grid(plotlist = all_plots[[6]], labels=c("C", "D")),
+      rel_widths = c(1, 10), nrow=1),
+      plot_grid(annotation_box(20),
+          plot_grid(plotlist = all_plots[[7]], labels=c("E", "F")),
+      rel_widths = c(1, 10), nrow=1),
+      plot_grid(annotation_box(30),
+          plot_grid(plotlist = all_plots[[8]], labels=c("G", "H")),
+      rel_widths = c(1, 10), nrow=1), ncol=1),
+rel_heights = c(1, 20), ncol=1)
+ggplot2::ggsave("plots/calib_perf_plot-4v4.pdf", pl_4v4, width = 14, height=16)
+
+
+pl_3v3 <- plot_grid(ggdraw() + draw_text("3 vs 3 samples", size=20, fontface = "bold"),
+    plot_grid(
+      plot_grid(annotation_box(5),
+          plot_grid(plotlist = all_plots[[9]], labels=c("A", "B")),
+      rel_widths = c(1, 10), nrow=1),
+      plot_grid(annotation_box(10),
+          plot_grid(plotlist = all_plots[[10]], labels=c("C", "D")),
+      rel_widths = c(1, 10), nrow=1),
+      plot_grid(annotation_box(20),
+          plot_grid(plotlist = all_plots[[11]], labels=c("E", "F")),
+      rel_widths = c(1, 10), nrow=1),
+      plot_grid(annotation_box(30),
+          plot_grid(plotlist = all_plots[[12]], labels=c("G", "H")),
+      rel_widths = c(1, 10), nrow=1), ncol=1),
+rel_heights = c(1, 20), ncol=1)
+ggplot2::ggsave("plots/calib_perf_plot-3v3.pdf", pl_3v3, width = 14, height=16)
+```
+
+
+
+
+```{r}
+plot_grid(plotlist = all_plots[[11]], labels=c("A", "B"), nrow=1)
+ggsave("plots/calib_perf_plot_main_text.pdf", width=12, height=4)
+```
+
+
+
+
+
+
+
+Why do the tools differ?
+
+```{r}
+
+tmp_res <- run_tools(perc_changed = 0.2, comparison = "3v3", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+
+```
+
+```{r}
+write_rds(tmp_res, "tmp/de_graaf/3v3_20_changed_raw_results.RDS")
+tmp_res <- read_rds( "tmp/de_graaf/3v3_20_changed_raw_results.RDS")
+```
+
+
+```{r}
+tmp_res$res_df %>%
+ group_by(method) %>%
+    do({tidy_FDR(., adj_pval, changed, ticks = ppoints(101) * 0.2)}) %>%
+    mutate(nice_label = case_when(
+      method == "zero-limma" ~ "DEP: Zero",
+      method == "knn-limma" ~ "DEP: KNN",
+      str_detect(method, "limma") ~ paste0("DEP: ", str_remove(method, "-limma")),
+      TRUE ~ method
+    )) %>%
+  make_calib_and_perf_plot()
+```
+
+
+```{r}
+obs_df <- tibble(name = rownames(tmp_res$shuf_df$data),
+                 Obs1 = rowSums(! is.na(tmp_res$shuf_df$data[, 1:3])),
+                 Obs2 = rowSums(! is.na(tmp_res$shuf_df$data[, 4:6]))) %>%
+  mutate(ObsLabel = paste0(pmin(Obs1, Obs2), "-", pmax(Obs1, Obs2))) %>%
+  mutate(ObsLabel = fct_reorder2( factor(ObsLabel, levels = c("All-All", unique(ObsLabel))), -pmin(Obs1, Obs2), -pmax(Obs1, Obs2)))
+
+tp_fp_per_obs_10 <- tmp_res$res_df %>%
+  inner_join(obs_df) %>%
+  mutate(adj_pval = ifelse(is.na(adj_pval), 1, adj_pval)) %>%
+  group_by(method, ObsLabel) %>%
+  summarize(TP = sum(changed & adj_pval < 0.1),
+            FP = sum(!changed & adj_pval < 0.1),
+            MargT = sum(changed)) %>%
+  bind_rows(tmp_res$res_df %>%
+    distinct() %>%
+    inner_join(obs_df) %>%
+    mutate(adj_pval = ifelse(is.na(adj_pval), 1, adj_pval)) %>%
+    group_by(method) %>%
+    summarize(TP = sum(changed & adj_pval < 0.1),
+              FP = sum(!changed & adj_pval < 0.1),
+              MargT = sum(changed)) %>%
+    mutate(ObsLabel = "All-All")) %>%
+  mutate(FDR = ifelse(FP == 0, 0, FP / (FP + TP))) %>%
+  mutate(nice_label = case_when(
+      method == "zero-limma" ~ "DEP: Zero",
+      method == "knn-limma" ~ "DEP: KNN",
+      str_detect(method, "limma") ~ paste0("DEP: ", str_remove(method, "-limma")),
+      TRUE ~ method
+    ))
+
+
+tp_fp_per_obs_01 <- tmp_res$res_df %>%
+  inner_join(obs_df) %>%
+  mutate(adj_pval = ifelse(is.na(adj_pval), 1, adj_pval)) %>%
+  group_by(method, ObsLabel) %>%
+  summarize(TP = sum(changed & adj_pval < 0.01),
+            FP = sum(!changed & adj_pval < 0.01),
+            MargT = sum(changed)) %>%
+  bind_rows(tmp_res$res_df %>%
+    distinct() %>%
+    inner_join(obs_df) %>%
+    mutate(adj_pval = ifelse(is.na(adj_pval), 1, adj_pval)) %>%
+    group_by(method) %>%
+    summarize(TP = sum(changed & adj_pval < 0.01),
+              FP = sum(!changed & adj_pval < 0.01),
+              MargT = sum(changed)) %>%
+    mutate(ObsLabel = "All-All")) %>%
+  mutate(FDR = ifelse(FP == 0, 0, FP / (FP + TP))) %>%
+  mutate(nice_label = case_when(
+      method == "zero-limma" ~ "DEP: Zero",
+      method == "knn-limma" ~ "DEP: KNN",
+      str_detect(method, "limma") ~ paste0("DEP: ", str_remove(method, "-limma")),
+      TRUE ~ method
+    ))
+
+
+fdr_per_obs_plot_10 <- ggplot(tp_fp_per_obs_10, aes(x = nice_label, y = ObsLabel)) +
+    geom_tile(aes(fill = FDR)) +
+    geom_text(aes(label  = paste0(FP, " / ", (FP + TP))), size=1.8) +
+    geom_hline(yintercept = 10.53, color="black") +
+    theme(axis.text.x = element_text(angle=30, hjust=1, vjust=1)) +
+    scale_fill_gradient2(low = "#91bfdb", mid="white", high = "#fc8d59",
+                         midpoint = 0.1,
+                         limits = c(0, 0.2), 
+                         expand = expand_scale(add = c(0, 0)),
+                         oob = function(x, range = c(0,1), only.finite){
+                           pmax(range[1], pmin(range[2], x))
+                         }) +
+  ggtitle("FDR by Observations", "(FP / Considered Positive)")  +
+  ylab("Observations per Condition") + xlab("")
+
+tp_per_obs_plot_10 <- ggplot(tp_fp_per_obs_10, aes(x = nice_label, y = ObsLabel)) +
+  geom_tile(data = . %>% filter(ObsLabel != "All-All"), aes(fill = TP)) +
+  geom_tile(data = . %>% filter(ObsLabel == "All-All"), fill="white") +
+  geom_text(aes(label  = paste0(TP, " / ", MargT)), size=1.8) +
+  geom_hline(yintercept = 10.53, color="black") +
+  theme(axis.text.x = element_text(angle=30, hjust=1, vjust=1)) +
+  scale_fill_gradientn(colors = scales::brewer_pal(palette = "Purples", direction = -1)(9)[3:9],
+                       name = "TP") +
+  ggtitle("TP by Observations", "(TP / Actually Positive)") +
+  ylab("Observations per Condition") + xlab("")
+
+
+fdr_per_obs_plot_01 <- ggplot(tp_fp_per_obs_01, aes(x = nice_label, y = ObsLabel)) +
+    geom_tile(aes(fill = FDR)) +
+    geom_text(aes(label  = paste0(FP, " / ", (FP + TP))), size=1.8) +
+    geom_hline(yintercept = 10.53, color="black") +
+    theme(axis.text.x = element_text(angle=30, hjust=1, vjust=1)) +
+    scale_fill_gradient2(low = "#91bfdb", mid="white", high = "#fc8d59",
+                         midpoint = 0.01,
+                         limits = c(0, 0.02), 
+                         expand = expand_scale(add = c(0, 0)),
+                         oob = function(x, range = c(0,1), only.finite){
+                           pmax(range[1], pmin(range[2], x))
+                         }) +
+  ggtitle("FDR by Observations", "(FP / Considered Positive)")  +
+  ylab("Observations per Condition") + xlab("")
+
+
+
+tp_per_obs_plot_01 <- ggplot(tp_fp_per_obs_01, aes(x = nice_label, y = ObsLabel)) +
+  geom_tile(data = . %>% filter(ObsLabel != "All-All"), aes(fill = TP)) +
+  geom_tile(data = . %>% filter(ObsLabel == "All-All"), fill="white") +
+  geom_text(aes(label  = paste0(TP, " / ", MargT)), size=1.8) +
+  geom_hline(yintercept = 10.53, color="black") +
+  theme(axis.text.x = element_text(angle=30, hjust=1, vjust=1)) +
+  scale_fill_gradientn(colors = scales::brewer_pal(palette = "Purples", direction = -1)(9)[3:9],
+                       name = "TP") +
+  ggtitle("TP by Observations", "(TP / Actually Positive)") +
+  ylab("Observations per Condition") + xlab("")
+
+
+fdr_10_box <- ggdraw() +
+    draw_grob(grid::rectGrob(just="top", y=1, height=0.9, width=0.5 ,gp=grid::gpar(fill="grey80", lty=0))) +
+    draw_text(paste0("Desired FDR fixed at 10%"), y=0.55, angle = 90) 
+
+fdr_01_box <- ggdraw() +
+    draw_grob(grid::rectGrob(just="top", y=1, height=0.9, width=0.5 ,gp=grid::gpar(fill="grey80", lty=0))) +
+    draw_text(paste0("Desired FDR fixed at  1%"), y=0.55, angle = 90) 
+
+plot_grid(fdr_10_box, fdr_per_obs_plot_10, tp_per_obs_plot_10,
+          fdr_01_box, fdr_per_obs_plot_01, tp_per_obs_plot_01, 
+          nrow=2, labels=c("", "A", "B", "", "C", "D"),
+          rel_widths = c(1, 10, 10))
+
+ggsave("plots/performance_by_observation.pdf", width=10, height=8)
+
+```
+
+
+
+
+
+
+
+
+```{r}
+
+
+ ggplot(tp_fp_per_obs_10, aes(x = nice_label, y = ObsLabel)) +
+    geom_tile(data = . %>% filter(ObsLabel != "All-All"), aes(fill = TP)) +
+    geom_tile(data = . %>% filter(ObsLabel == "All-All"), fill="white") +
+    geom_text(aes(label  = paste0(TP, " / ", MargT)), size=2) +
+    theme(axis.text.x = element_text(angle=30, hjust=1, vjust=1)) +
+    scale_fill_gradientn(colors = scales::brewer_pal(palette = "Purples", direction = -1)(9)[4:9],
+                         name = "TP") +
+    ggtitle("TP by Observations", "(TP / Actually Positive)") +
+    ylab("Observations per Condition") + xlab("")
+```
+
+
+
+
+
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+

@@ -1,0 +1,313 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+
+
+
+
+
+```{r}
+library(tidyverse)
+library(proDA)
+library(cowplot)
+library(rstan)
+options(mc.cores = 8)
+rstan_options(auto_write = TRUE)
+proDA_stan_model <- stan_model("proDA_model.stan")
+
+```
+
+
+
+
+
+```{r}
+fit <- read_rds("../compare_performance/tmp/de_graaf/zero_info_parameters.RDS")
+fit
+```
+
+
+```{r}
+
+background_dist <- tibble(value = c(fit$abundances))
+mu0 <- fit$hyper_parameters$location_prior_mean
+sigma20 <- fit$hyper_parameters$location_prior_scale
+rho <- 16.5
+zeta <- -0.7
+df0 <- 3
+tau20 <- 0.05
+```
+
+
+
+```{r}
+sigmoid_df <- tibble(x=seq(10, 30, length.out = 1001)) %>%
+  mutate(y = proDA:::invprobit(x, rho=rho, zeta=zeta))
+
+normal_df <- tibble(x=seq(10, 30, length.out = 1001)) %>%
+  mutate(y = dnorm(x, mu0, sqrt(sigma20 + 0.3))) %>%
+  identity()
+
+
+ggplot(background_dist, aes(x = value)) +
+  geom_histogram(aes(y= ..density.. * 2/3), fill="#BBBBBB") +
+  geom_line(data=normal_df, aes(x=x, y=y), color="#555555") +
+  geom_line(data=sigmoid_df, aes(x=x, y=y * 0.15), color="red") +
+  guides(fill=FALSE, color=FALSE) +
+  ylab("") +
+  theme(axis.line.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) +
+  NULL
+
+```
+
+
+
+
+```{r}
+fully_obs <- c(20.8, 21.2, 21.4)
+fully_obs_res <- pd_lm(fully_obs ~ 1, dropout_curve_position = rho, 
+                       dropout_curve_scale = zeta,
+                       location_prior_mean = mu0, 
+                       location_prior_scale = sigma20,
+                       location_prior_df = 3,
+                       variance_prior_scale = tau20,
+                       variance_prior_df = df0)
+
+
+sigma2_fo <- fully_obs_res$s2 * fully_obs_res$df / (fully_obs_res$df + 1)
+dens_fully_obs <- tibble(x=seq(10, 30, length.out = 1001)) %>%
+  mutate(y = sapply(x, function(.x)proDA:::objective_fnc(y = fully_obs, 
+                                   yo = fully_obs,
+                                   X = matrix(1, nrow=length(fully_obs), ncol=1),
+                                   Xm = matrix(1, nrow=sum(is.na(fully_obs)), ncol=1),
+                                   Xo = matrix(1, nrow=sum(! is.na(fully_obs)), ncol=1),
+                                   beta = .x,
+                                   sigma2 = sigma2_fo,
+                                   rho = NA,
+                                   zetastar = NA,
+                                   mu0 = mu0,
+                                   sigma20 = sigma20,
+                                   df0 = df0,
+                                   tau20 = tau20,
+                                   location_prior_df = 1,
+                                   moderate_location = TRUE,
+                                   moderate_variance = TRUE
+                                   ))) 
+
+y1 <- c(17.8, NA, NA)
+y1_res <- pd_lm(y1 ~ 1, dropout_curve_position = rho, 
+                       dropout_curve_scale = zeta,
+                       location_prior_mean = mu0, 
+                       location_prior_scale = sigma20,
+                       variance_prior_scale = tau20,
+                       variance_prior_df = df0)
+
+sigma2_y1 <- y1_res$s2 * y1_res$df / (y1_res$df + 1)
+
+dens_y1 <- tibble(x=seq(10, 30, length.out = 1001)) %>%
+  mutate(y = sapply(x, function(.x)proDA:::objective_fnc(y = y1, 
+                                   yo = y1[! is.na(y1)],
+                                   X = matrix(1, nrow=length(y1), ncol=1),
+                                   Xm = matrix(1, nrow=sum(is.na(y1)), ncol=1),
+                                   Xo = matrix(1, nrow=sum(!is.na(y1)), ncol=1),
+                                   beta = .x,
+                                   sigma2 = sigma2_y1,
+                                   rho = rep(rho, sum(is.na(y1))),
+                                   zetastar = -sqrt(rep(zeta^2 + sigma2_y1, sum(is.na(y1)))),
+                                   mu0 = mu0,
+                                   sigma20 = sigma20,
+                                   df0 = df0,
+                                   tau20 = tau20,
+                                   location_prior_df = 3,
+                                   moderate_location = TRUE,
+                                   moderate_variance = TRUE
+                                   ))) 
+
+
+
+
+y2 <- c(NA, NA, NA)
+y2_res <- pd_lm(y2 ~ 1, dropout_curve_position = rho,
+                       dropout_curve_scale = zeta,
+                       location_prior_mean = mu0,
+                       location_prior_scale = sigma20,
+                       variance_prior_scale = tau20,
+                       variance_prior_df = df0)
+
+sigma2_y2 <- y2_res$s2 * y2_res$df / (y2_res$df + 1)
+
+dens_y2 <- tibble(x=seq(10, 30, length.out = 1001)) %>%
+  mutate(y = sapply(x, function(.x)proDA:::objective_fnc(y = y2,
+                                   yo = y2[! is.na(y2)],
+                                   X = matrix(1, nrow=length(y2), ncol=1),
+                                   Xm = matrix(1, nrow=sum(is.na(y2)), ncol=1),
+                                   Xo = matrix(1, nrow=sum(!is.na(y2)), ncol=1),
+                                   beta = .x,
+                                   sigma2 = sigma2_y2,
+                                   rho = rep(rho, sum(is.na(y2))),
+                                   zetastar = -sqrt(rep(zeta^2 + sigma2_y2, sum(is.na(y2)))),
+                                   mu0 = mu0,
+                                   sigma20 = sigma20,
+                                   df0 = df0,
+                                   tau20 = tau20,
+                                   location_prior_df = 3,
+                                   moderate_location = TRUE,
+                                   moderate_variance = TRUE
+                                   )))
+
+
+# rbind(mutate(dens_fully_obs, method = "fully"),
+#       mutate(dens_y1, method = "one"),
+#       mutate(dens_y2, method = "none")) %>%
+#   mutate(y = exp(y)) %>%
+#   group_by(method) %>%
+#   mutate(y = y / max(y)) %>%
+#   ggplot(aes(x=x, y=y, color=method, fill=method)) +
+#     geom_line() +
+#     geom_ribbon(aes(ymin = 0, ymax=y), alpha=0.1)
+
+dens_approx <- tibble(x=seq(10, 30, length.out = 1001)) %>%
+  mutate(fo_approx = proDA:::dt.scaled(x, df=length(y1)-1, mean = fully_obs_res$coefficients, 
+                                       sd=sqrt( fully_obs_res$coef_variance_matrix[1,1] )),
+         y1_approx = proDA:::dt.scaled(x, df=1000, mean = y1_res$coefficients, sd=sqrt( y1_res$coef_variance_matrix[1,1] )),
+         y2_approx = proDA:::dt.scaled(x, df=1000, mean = y2_res$coefficients, sd=sqrt( y2_res$coef_variance_matrix[1,1] ))) %>%
+  gather(method, value, -x) %>%
+  group_by(method) %>%
+  mutate(value = value / max(value))
+
+```
+
+
+
+
+
+```{r}
+run_stan_model <- function(y, X, mu0, sigma20, tau20, df0, rho, zeta, location_prior_df, iter=2e3){
+  Y <- matrix(y, nrow=1) 
+  Y[is.na(Y)] <- Inf
+  data <- list(nsamples = length(y),
+               nrows=1L,
+               nparams = ncol(X),
+               totalmissing = as.integer(sum(is.na(y))),
+               design_matrix = X,
+               Y = Y,
+               location_prior_df = location_prior_df,
+               zeta = rep(zeta, length(y)),
+               rho = rep(rho, length(y)),
+               mu0 = mu0,
+               sigma20 = sigma20,
+               eta = tau20,
+               nu = df0)
+  stan_fit <- sampling(proDA_stan_model, data=data, iter=iter)
+  Beta <- extract(stan_fit, "Beta")[[1]]
+  Beta[,1,1]
+}
+
+dens_fo_stan <- run_stan_model(y = fully_obs, X = matrix(1, nrow=length(fully_obs), ncol=1), mu0 = mu0,   sigma20 = sigma20,
+                               tau20 = tau20, df0 = df0, rho = rho, zeta = zeta, location_prior_df = 3, iter=5e4)
+
+dens_y1_stan <- run_stan_model(y = y1, X = matrix(1, nrow=length(y1), ncol=1), mu0 = mu0,   sigma20 = sigma20,
+                               tau20 = tau20, df0 = df0, rho = rho, zeta = zeta, location_prior_df = 3, iter=5e4)
+
+dens_y2_stan <- run_stan_model(y = y2, X = matrix(1, nrow=length(y2), ncol=1), mu0 = mu0,   sigma20 = sigma20,
+                               tau20 = tau20, df0 = df0, rho = rho, zeta = zeta, location_prior_df = 3, iter=5e4)
+
+dens_adj <- 2
+dens_stan <- rbind(density(dens_fo_stan, adjust = dens_adj) %>%
+  {tibble(x = .$x,
+         y = .$y)} %>%
+  mutate(y = y / max(y)) %>%
+  mutate(method = "fully"),
+  density(dens_y1_stan, adjust = dens_adj) %>%
+  {tibble(x = .$x,
+         y = .$y)} %>%
+  mutate(y = y / max(y)) %>%
+  mutate(method = "one"),
+  density(dens_y2_stan, adjust = dens_adj) %>%
+  {tibble(x = .$x,
+         y = .$y)} %>%
+  mutate(y = y / max(y)) %>%
+  mutate(method = "none"))
+```
+
+
+
+
+
+
+
+```{r}
+
+color_definitions <- list(fully_obs = "#1b9e77",
+                       y1 = "#d95f02",
+                       y2 = "#7570b3")
+
+hist_p <- ggplot(background_dist, aes(x = value)) +
+  geom_histogram(aes(y= ..density.. * 2/3), fill="#BBBBBB") +
+  geom_line(data=normal_df, aes(x=x, y=y), color="#555555", size=2) +
+  geom_line(data=sigmoid_df, aes(x=x, y=y * 0.15), color="#555555", size=2) +
+  geom_vline(xintercept = fully_obs, color = color_definitions$fully_obs, size=2) +
+  geom_vline(xintercept = y1, color = color_definitions$y1, size=2) +
+  scale_y_continuous(expand = expand_scale(add = c(-0.001, 0.01))) +
+  scale_x_continuous(expand = expand_scale(add = c(0.5, 0))) +
+  coord_cartesian(xlim = c(11, 27)) +
+  ylab("") + xlab("") +
+  guides(fill=FALSE, color=FALSE) +
+  theme(axis.line.y = element_blank(),
+        axis.line.x = element_line(size=1.4),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        plot.margin = unit(c(5, 5, 5, -35), "pt")
+        ) +
+  NULL
+
+
+
+dens_p <- rbind(mutate(dens_fully_obs, method = "fully"),
+      mutate(dens_y1, method = "one"),
+      mutate(dens_y2, method = "none")
+      ) %>%
+  mutate(y = exp(y)) %>%
+  group_by(method) %>%
+  mutate(y = y / max(y)) %>%
+  ggplot(aes(x=x, y=y, color=method)) +
+    geom_line(data= dens_stan, aes(x=x, y=y, color=method), size=2) +
+    geom_ribbon(data= dens_stan, aes(x=x, ymin = 0, ymax=y, fill=method), alpha=0.1) +
+    geom_line(data= dens_approx, aes(x=x, y=value, group=method), size=0.8, linetype = "dashed", color="black") +
+    scale_color_manual(values = c(fully = color_definitions$fully_obs, one = color_definitions$y1, none = color_definitions$y2)) +
+    scale_fill_manual(values = c(fully = color_definitions$fully_obs, one = color_definitions$y1, none = color_definitions$y2)) +
+    # scale_y_continuous(expand = expand_scale(add = c(0,0))) +
+    scale_y_continuous(expand = expand_scale(add = c(0.001, 0.01))) +
+    scale_x_continuous(expand = expand_scale(add = c(0.5, 0))) +
+    coord_cartesian(xlim = c(11, 27)) +
+    ylab("") +
+    guides(color = "none", fill = "none") +
+    theme(axis.line.y = element_blank(),
+          axis.line.x = element_line(size=1.4),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.margin = unit(c(-25, 5, 5, 5), "pt"))
+
+
+plot_grid(hist_p, dens_p, ncol = 1, align = "v", rel_heights = c(5,2))
+ggsave("plots/hist_with_density.pdf", width=9, height=5)
+```
+
+
+
+
+
+
+
+# Session Info
+
+```{r}
+sessionInfo()
+```
+

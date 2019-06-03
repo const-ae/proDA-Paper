@@ -1,0 +1,361 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+
+
+
+
+```{r}
+
+library(tidyverse)
+library(proDA)
+library(cowplot)
+library(SummarizedExperiment)
+
+```
+
+
+```{r}
+pval_cut_off <- 0.01
+```
+
+
+```{r}
+load("../data/zhang_ubiquitination/DiUbi.rda")
+# Loads the DiUbi_ExpDesign, which contains the labels for the columns of DiUbi
+load("../data/zhang_ubiquitination/DiUbi_ExpDesign.rda")
+
+
+X_zhang <- DiUbi %>%
+  dplyr::select(Protein=`Protein.IDs`, starts_with("LFQ.intensity")) %>%
+  mutate_at(vars(-Protein), ~ if_else(. == 0, NA_real_, log2(.)))  %>%
+  column_to_rownames("Protein") %>%
+  as.matrix()
+
+description_zhang <- DiUbi_ExpDesign %>%
+  dplyr::select(-label) %>%
+  transmute(sample = paste0(condition, "_", replicate), condition=condition, 
+            replicate= paste0("Rep_", replicate)) 
+
+colnames(X_zhang) <- description_zhang$sample
+rownames(description_zhang) <- description_zhang$sample
+
+remove(DiUbi, DiUbi_ExpDesign)
+```
+
+Create a SummarizedExperiment
+
+```{r}
+se <- SummarizedExperiment(X_zhang, colData = description_zhang)
+se_norm <- median_normalization(se)
+```
+
+
+```{r}
+set.seed(1)
+fit <- proDA(se_norm, design = ~ condition, n_subsample = 1000,
+             reference_level = "ctrl", verbose=TRUE)
+```
+
+
+```{r}
+write_rds(fit, "tmp/fit.RDS")
+fit <- read_rds("tmp/fit.RDS")
+```
+
+```{r}
+fit
+```
+
+
+
+# Distance matrix
+
+
+Distance with imputation
+
+```{r}
+set.seed(1)
+library(DEP)
+
+tmp_exp_df <- colData(se_norm) %>%
+  as.data.frame() %>%
+  mutate(ID=sample) %>%
+  dplyr::rename(label=sample)
+
+tmp_rowdata <- data_frame(name=rownames(se_norm)) %>%
+  mutate(ID = name)
+
+se_dep <- SummarizedExperiment(assay(se_norm), colData=tmp_exp_df, rowData=tmp_rowdata)
+```
+
+
+
+Imputation
+
+```{r}
+
+se_dep_imp <- impute(se_dep, fun = "MinProb", q = 0.01)
+
+```
+
+```{r}
+sample_distances <- dist_approx(fit)
+sample_distance_mat <- as.matrix(sample_distances$mean)
+sample_distance_mat[diag(ncol(sample_distance_mat)) == 1] <- NA
+mat_plot <- pheatmap::pheatmap(sample_distance_mat,
+                               cluster_rows = sample_distances$mean,
+                               cluster_cols = sample_distances$mean,
+                               main = "Sample Distances (proDA)",
+                               color = viridis::plasma(n=100),
+                               border_color = NA,
+                               silent = TRUE)$gtable
+
+sample_distances_dep <- dist(t(assay(se_dep_imp)))
+sample_distance_mat_dep <- as.matrix(sample_distances_dep)
+sample_distance_mat_dep[diag(ncol(sample_distance_mat_dep)) == 1] <- NA
+mat_plot_dep <- pheatmap::pheatmap(sample_distance_mat_dep, 
+                                   cluster_rows = sample_distances_dep,
+                                   cluster_cols = sample_distances_dep,
+                                   main = "Sample Distances (Imputation)",
+                                   color = viridis::plasma(n=100),
+                                   border_color = NA,
+                                   silent = TRUE)$gtable
+
+cowplot::plot_grid(mat_plot, mat_plot_dep, nrow=2)
+ggsave("plots/sample_distance_heatmaps2.pdf", width=3.2, height=6, scale=1.8)
+```
+
+
+
+
+
+
+
+```{r}
+
+conds <- paste0("condition", setdiff(unique(description_zhang$condition), "ctrl"))
+test_res <- as_tibble(bind_rows(lapply(conds, function(cond){
+  tmp <- proDA::test_diff(fit, cond)
+  tmp$Condition <- str_replace(cond, "condition", "")
+  tmp
+})))
+
+test_res_f <- proDA::test_diff(fit, reduced_model = ~ 1, verbose=TRUE)
+
+```
+
+
+
+
+
+
+
+
+
+# Upset Plots
+
+```{r}
+library(cowplot)
+condition_counts <- test_res %>% 
+  dplyr::select(-c(t_statistic, se, df, n_approx, n_obs)) %>% 
+  mutate(Origin = "proDA") %>%
+  filter(adj_pval < pval_cut_off & diff > 0) %>%
+  dplyr::count(Origin, Condition) %>%
+  mutate(Condition = fct_reorder(as.factor(Condition), -n))
+
+hist_overall2 <-  ggplot(condition_counts, aes(x=Condition, y=n, fill=Origin)) +
+    geom_col() +
+    scale_y_continuous(expand = expand_scale(add = c(0, 10))) +
+    scale_fill_manual(values = c("proDA" = "#5a8c08"), name = "") +
+    xlab("")  + ylab("") +
+    theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1)) +
+    guides(fill = FALSE)
+
+hist_upset2 <- test_res %>% 
+  dplyr::select(-c(t_statistic, se, df, n_approx, n_obs)) %>%
+  mutate(Origin = "proDA")  %>%
+  filter(adj_pval < pval_cut_off & diff > 0) %>%
+  group_by(Origin, name) %>%
+  summarize(Conditions = list(Condition)) %>%
+  ungroup() %>%
+  ggplot(aes(x=Conditions, fill=Origin)) +
+    geom_bar(position = position_dodge(preserve = "single")) +
+    ggupset::scale_x_upset(n_intersections = 25, order_by = "degree",
+                           sets = levels(condition_counts$Condition)) +
+    scale_y_continuous(expand = expand_scale(add = c(0, 10))) +
+    scale_fill_manual(values = c("proDA" = "#5a8c08"), name = "") +
+    xlab("")  + ylab("") +
+    theme(legend.text = element_text(size = 20)) +
+    ggupset::theme_combmatrix(combmatrix.label.height = unit(3.5, "cm"))
+
+legend <- get_legend(hist_upset2)
+plot_grid(hist_overall2, hist_upset2 + guides(fill=FALSE), rel_widths = c(1.3,3), align = "vh") +
+  draw_grob(legend, x = 0.1, y= -0.2, scale=1)
+ggsave("plots/upset_plot.pdf", width=8, height=3.7)
+
+```
+
+
+
+# Go enrichment
+
+
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+
+
+
+```{r}
+uniprot_gene_mapper <- read_tsv("../data/zhang_ubiquitination/uniprot_mapping_mart.tsv") %>% 
+  mutate(UniProtID = coalesce(`UniProtKB/Swiss-Prot ID`, `UniProtKB/TrEMBL ID`)) %>%
+  dplyr::select(GeneID = `Gene stable ID`, ProteinID = `Protein stable ID`,
+                GeneName = `Gene name`, TranscriptID = `Transcript stable ID`,
+                UniProtID) %>%
+  drop_na(UniProtID)
+```
+
+
+
+```{r}
+first_non_na <- function(x, along=x){
+  stopifnot(length(x) == length(along))
+  if(length(x) > 0){
+    if(all(is.na(along))){
+      is.na(x) <- 1
+      x[1]
+    }else{
+      x[which(! is.na(along))[1]]
+    }
+  }else{
+    x
+  }
+}
+
+annot_res <- test_res_f %>%
+  filter(adj_pval < pval_cut_off) %>%
+  mutate(id = 1:n(), name = str_split(name, ";")) %>%
+  unnest() %>%
+  mutate(id2 = 1:n()) %>%
+  dplyr::rename(UniProtID = name) %>%
+  mutate(UniProtID_mod = str_replace(UniProtID, "-\\d+$", "")) %>%
+  left_join(uniprot_gene_mapper, by = c(UniProtID_mod="UniProtID")) %>%
+  group_by(id, pval, adj_pval, avg_abundance) %>%
+  summarize(GeneName = first_non_na(GeneName, GeneID),
+            UniProtID = if_else(is.na(first_non_na(UniProtID, GeneID)), 
+                                UniProtID[1], 
+                                first_non_na(UniProtID, GeneID)),
+            GeneID = first_non_na(GeneID)) %>%
+  drop_na(GeneID) %>%
+  ungroup() %>%
+  add_count(UniProtID) 
+
+
+ego <- enrichGO(unique(annot_res$GeneID),
+                OrgDb = org.Hs.eg.db,
+                keyType="ENSEMBL",
+                ont = "BP",
+                readable = TRUE)
+
+
+go_comparison <- as_tibble(ego) %>%
+ transmute(ID, Description, adj_pval = p.adjust,
+           Significant = Count,
+           SetSize = as.numeric(str_match(BgRatio, "^(\\d+)/\\d+$")[,2])) %>%
+  arrange(adj_pval)
+
+
+go_comparison
+
+```
+
+
+
+
+
+
+Go for each condition
+
+
+```{r}
+go_per_cond <- lapply(str_replace(conds, "condition", ""), function(cond){
+  annot_res <- test_res %>%
+    filter(Condition == cond) %>%
+    filter(adj_pval < pval_cut_off) %>%
+    mutate(id = 1:n(), name = str_split(name, ";")) %>%
+    unnest() %>%
+    mutate(id2 = 1:n()) %>%
+    dplyr::rename(UniProtID = name) %>%
+    mutate(UniProtID_mod = str_replace(UniProtID, "-\\d+$", "")) %>%
+    left_join(uniprot_gene_mapper, by = c(UniProtID_mod="UniProtID")) %>%
+    group_by(id, pval, adj_pval, avg_abundance) %>%
+    summarize(GeneName = first_non_na(GeneName, GeneID),
+              UniProtID = if_else(is.na(first_non_na(UniProtID, GeneID)), 
+                                  UniProtID[1], 
+                                  first_non_na(UniProtID, GeneID)),
+              GeneID = first_non_na(GeneID)) %>%
+    drop_na(GeneID) %>%
+    ungroup() %>%
+    add_count(UniProtID) 
+  
+  
+  enrichGO(unique(annot_res$GeneID),
+                  OrgDb = org.Hs.eg.db,
+                  keyType="ENSEMBL",
+                  ont = "BP",
+                  readable = TRUE)
+})
+
+```
+
+
+
+
+
+```{r}
+bind_rows(lapply(seq_along(go_per_cond), function(idx){
+  as_tibble(go_per_cond[[idx]]) %>%
+   transmute(ID, Description, adj_pval = p.adjust,
+             Significant = Count,
+             SetSize = as.numeric(str_match(BgRatio, "^(\\d+)/\\d+$")[,2]),
+             Condition = str_replace(conds[idx], "condition", "")) %>%
+    arrange(adj_pval)
+})) %>%
+  rbind( as_tibble(ego) %>%
+   transmute(ID, Description, adj_pval = p.adjust,
+             Significant = Count,
+             SetSize = as.numeric(str_match(BgRatio, "^(\\d+)/\\d+$")[,2]),
+             Condition = "F-Test") %>%
+    arrange(adj_pval)) %>%
+  group_by(ID, Description, SetSize) %>%
+  nest() %>%
+  mutate(sorter = map_dbl(data, ~ min(.x$adj_pval))) %>%
+  mutate(label = paste0(Description, " (", SetSize, ")")) %>%
+  mutate(ID = fct_reorder(as.factor(ID), -sorter)) %>%
+  mutate(label = fct_reorder(as.factor(label), -sorter)) %>%
+  arrange(sorter) %>%
+  head(n = 7) %>%
+  unnest() %>%
+  ggplot(aes(x = Condition, y=label, color=-log10(adj_pval))) +
+    geom_point(size = 5) +
+    scale_color_distiller(palette = "GnBu", direction = 1) +
+    scale_y_discrete(labels = scales::wrap_format(40)) +
+    xlab("") + ylab("") +
+    theme(legend.position = "bottom")
+ggsave(file = "plots/go_term_dot_plot.pdf", width=9, height=5)
+
+```
+
+
+
+
+
+
+
+
