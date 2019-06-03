@@ -23,7 +23,7 @@ for the paper:
   de Graaf data and make the validation and comparison plots
     - [Performance comparison notebook](https://htmlpreview.github.io/?https://github.com/const-ae/proDA-Paper/blob/master/compare_performance/compare_performance.nb.html)
 * `ubiquitination` contains the code that was used to analyze the Ubiquitination data
-    - [Analysis notebook](https://github.com/const-ae/proDA-Paper/blob/master/ubiquitination/Ubiquitination_Analysis.nb.html)
+    - [Analysis notebook](https://htmlpreview.github.io/?https://github.com/const-ae/proDA-Paper/blob/master/ubiquitination/Ubiquitination_Analysis.nb.html)
 
 
 
