@@ -13,12 +13,17 @@ output: html_notebook
 library(tidyverse)
 library(proDA)
 library(DEP)
+library(DAPAR)
 library(SummarizedExperiment)
 library(cowplot)
 source("run_dep.R")
 source("run_proDA.R")
 source("run_qprot.R")
 source("run_perseus.R")
+source("run_dapar.R")
+source("run_ebrct.R")
+source("RanCenHier2Fun_modified.R")
+
 ```
 
 
@@ -299,10 +304,18 @@ imp_methods <- list(
 Beautiful plot
 
 ```{r}
-color_mapping <- c(proDA = "#5a8c08", QPROT = "#fb8072", Perseus = "#386cb0",
-                   `knn-limma`="#5B127F", `QRILC-limma`="#D070FF", `MinDet-limma`="#B724FF",
-                   `MinProb-limma`="#68387F", `zero-limma`="#921DCC")
+color_mapping <- c(proDA = "#33A02C", 
+                   `knn-limma`="#CAB2D6", `QRILC-limma`="#B294C7", `MinDet-limma`="#9A77B8", `MinProb-limma`="#825AA9", `zero-limma`="#6A3D9A",
+                   DAPAR = "#1F78B4", 
+                   Perseus = "#8AADBF",
+                   QPROT = "#bfa419", EBRCT = "#B15928")
 background_painter <- data.frame(DesiredFDR=c(0, 0.1, 0.2), ObservedFDR=c(0, 0.1, 0.2))
+
+plot(c(0, 1), c(0, 1), type="n")
+rect(seq(0, 1-1/length(color_mapping), l=length(color_mapping)), 0, seq(1/length(color_mapping), 1, length=length(color_mapping)), 1, col=color_mapping)
+text(x=seq(0, 1-1/length(color_mapping), l=length(color_mapping)) + 0.5/length(color_mapping), y=0.7, labels=color_mapping, srt=90)
+text(x=seq(0, 1-1/length(color_mapping), l=length(color_mapping)) + 0.5/length(color_mapping), y=0.3, labels=names(color_mapping), srt=90)
+
 ```
 
 
@@ -318,14 +331,14 @@ make_calib_and_perf_plot <- function(tp_fp_df){
       annotate("text", x=0.085, y=0.03, hjust=0, label="conservative", size=5, alpha=0.5) +
       annotate("text", x=0.03, y=0.085, hjust=0, angle = 90, label="anti-conservative", size=5, alpha=0.5) +
       annotate("text", x=0.15, y=0.16, hjust=0, angle=45, label="optimal", alpha=0.5, size=5) +
-      geom_abline(intercept=0, slope=1, size=2, color="grey") +
+      geom_segment(x = 0, y=0, xend=0.2, yend = 0.2, size=2, color = "grey") +
       geom_line() +
       geom_line(data=. %>% filter(method == "proDA"), size=1.5, color=color_mapping["proDA"]) +
       ggrepel::geom_label_repel(data=. %>% 
                      filter(DesiredFDR == max(DesiredFDR)),
                 aes(label=nice_label, color= method),
                 text.color = "black", segment.colour = "lightgrey", 
-                anchor.side = "left", size=5,
+                anchor.side = "left", size=4,
                 direction="y", hjust=1, xlim=c(0.215, NA)) +
       scale_color_manual(values= color_mapping,  guide="none") + 
       scale_x_continuous(breaks =  c(0, 0.05, 0.1, 0.15, 0.2), 
@@ -334,24 +347,32 @@ make_calib_and_perf_plot <- function(tp_fp_df){
       scale_y_continuous(breaks =  c(0, 0.05, 0.1, 0.15, 0.2), 
                          labels =  c("0", "0.05", "0.10", "0.15", "0.20"),
                          expand = expand_scale(add = c(0.001, 0))) +
-      lemon::coord_flex_fixed(xlim = c(0, 0.3), ylim=c(0,0.2), 
+      lemon::coord_flex_fixed(xlim = c(0, 0.325), ylim=c(0,0.25), 
                               bottom = lemon::capped_horizontal("right", gap=0)) +
       xlab(paste0("Desired FDR", paste0(rep(" ", 32), collapse = ""))) + ylab("Actual FDR")
   
+  max_tp <- max(tp_fp_df$TP) * 1.1
+  
   perf_plot <- tp_fp_df %>%
-    ggplot(aes(x=DesiredFDR, y=TP, group=method, color=method)) +
-      geom_line() +
-      geom_line(data=. %>% filter(method == "proDA"), size=1.5, color=color_mapping["proDA"]) +
+    group_by(method) %>%
+    mutate(anticons = ObservedFDR > DesiredFDR + 0.005) %>%
+    mutate(linesection = cumsum(anticons != lag(anticons, default=anticons[1]))) %>%
+    ggplot(aes(x=DesiredFDR, y=TP, group=paste0(method, "-", linesection), color=method)) +
+    geom_line(aes(linetype = anticons)) +
+      geom_line(data=. %>% filter(method == "proDA"), 
+                aes(linetype = anticons),
+                size=1.5, color=color_mapping["proDA"]) +
       ggrepel::geom_label_repel(data=. %>% 
                      filter(DesiredFDR == max(DesiredFDR)),
                 aes(label=nice_label, color= method),
                 text.color = "black", segment.colour = "lightgrey", 
-                anchor.side = "left", size=5,
+                anchor.side = "left", size=4,
                 direction="y", hjust=1, xlim=c(0.215, NA)) +
-      scale_color_manual(values= color_mapping,  guide="none") + 
+      scale_color_manual(values= color_mapping,  guide="none") +
+      scale_linetype_manual(values=c(`FALSE` = "solid", `TRUE` = "39"), guide = "none") +
       scale_x_continuous(breaks =  c(0, 0.05, 0.1, 0.15, 0.2), 
                          labels =  c("0", "0.05", "0.10", "0.15", "0.20")) +
-      ylim(0, NA) +
+      ylim(0, max_tp) +
       lemon::coord_capped_cart(xlim = c(0, 0.3), gap = 0, 
                               expand = expand_scale(add = c(0.01, 0.1)),
                               bottom='right') +
@@ -366,7 +387,7 @@ make_calib_and_perf_plot <- function(tp_fp_df){
 
 
 ```{r}
-run_tools <- function(perc_changed, comparison, methods = c("proDA", "DEP", "QPROT", "Perseus")){
+run_tools <- function(perc_changed, comparison, methods = c("proDA", "DEP", "QPROT", "Perseus", "DAPAR", "EBRCT")){
   
   if(! exists("data_norm")){
     stop("data_norm variable not yet initialized")
@@ -377,16 +398,39 @@ run_tools <- function(perc_changed, comparison, methods = c("proDA", "DEP", "QPR
   
   set.seed(1)
   shuf_df <- shuffle_dataset(data_norm, perc_changed, comparison = comparison)
+  changed_df <- tibble(name = rownames(data_norm), changed = shuf_df$changed)
   
   if("proDA" %in% methods){
     proDA_result <- run_proDA(shuf_df$data,
                               shuf_df$experimental_design, verbose=TRUE)
     proDA_result_df <- as_tibble(proDA_result$result) %>%
-      mutate(method = "proDA",
-             changed = shuf_df$changed)  %>% 
+      mutate(method = "proDA") %>% 
+      inner_join(changed_df) %>%
       select(name, pval, adj_pval, diff, method, changed)
   }else{
     proDA_result_df <- NULL
+  }
+  
+  if("EBRCT" %in% methods){
+     ebrct_res <- run_ebrct(shuf_df$data, 
+                            shuf_df$experimental_design)
+     ebrct_res_df <-  ebrct_res %>%
+       mutate(method = "EBRCT") %>% 
+       inner_join(changed_df) %>%
+       select(name, pval, adj_pval, diff, method, changed)
+   }else{
+      ebrct_res_df <- NULL
+   }
+  
+  if("DAPAR" %in% methods){
+    dapar_result <- run_dapar(shuf_df$data,
+                              shuf_df$experimental_design)
+    dapar_result_df <- as_tibble(dapar_result) %>%
+      mutate(method = "DAPAR") %>% 
+      inner_join(changed_df) %>%
+      select(name, pval, adj_pval, diff, method, changed)
+  }else{
+    dapar_result_df <- NULL
   }
 
   if("DEP" %in% methods){
@@ -396,7 +440,7 @@ run_tools <- function(perc_changed, comparison, methods = c("proDA", "DEP", "QPR
                                      experimental_design = shuf_df$experimental_design,
                      imputation_method = imp_met[[1]]), imp_met[-1]))
       tmp$method <- paste0(imp_met[[1]], "-limma")
-      tmp$changed <- shuf_df$changed
+      tmp <- inner_join(tmp, changed_df)
       tmp
     }) %>%
     select(name, pval, adj_pval, diff, method, changed)
@@ -408,24 +452,24 @@ run_tools <- function(perc_changed, comparison, methods = c("proDA", "DEP", "QPR
     qprot_result <- run_qprot(shuf_df$data[, shuf_df$experimental_design == "SynCond_1"],
                               shuf_df$data[, shuf_df$experimental_design == "SynCond_2"])
     qprot_result_df <- as_tibble(qprot_result) %>%
-      transmute(name=Protein, pval = pnorm(Zstatistic), adj_pval = fdr, diff=LogFoldChange) %>%
+      transmute(name=Protein, pval = pnorm(Zstatistic), adj_pval = fdr, diff=-LogFoldChange) %>%
       mutate(pval = pmin(pval, 1-pval) * 2) %>%
-      mutate(method = "QPROT",
-             changed = shuf_df$changed) %>%
+      mutate(method = "QPROT") %>% 
+      inner_join(changed_df) %>%
       select(name, pval, adj_pval, diff, method, changed)
   }else{
     qprot_result_df <- NULL
   }
 
   if("Perseus" %in% methods){
-    perseus_result<- run_perseus(shuf_df$data, tag = paste0(perc_changed * 100, "_", comparison), 
+    perseus_result<- run_perseus(shuf_df$data, tag = paste0(perc_changed * 100, "_", comparison),
                                  return_null_if_missing = TRUE)
     if(is.null(perseus_result)){
       perseus_result_df <- NULL
     }else{
       perseus_result_df <- as_tibble(perseus_result) %>%
-        mutate(method = "Perseus",
-               changed = shuf_df$changed)  %>%
+        mutate(method = "Perseus") %>% 
+        inner_join(changed_df) %>%
         select(name, pval, adj_pval, diff, method, changed) 
     }
   }else{
@@ -443,13 +487,15 @@ run_tools <- function(perc_changed, comparison, methods = c("proDA", "DEP", "QPR
   res_df <- bind_rows(list(null_df, dep_result_df ,
     proDA_result_df,
     qprot_result_df ,
-    perseus_result_df))
+    perseus_result_df,
+    dapar_result_df,
+    ebrct_res_df))
   
   list(shuf_df = shuf_df, res_df = res_df)
 }
 
 run_performance_comparison <- function(perc_changed, comparison,
-                                       methods = c("proDA", "DEP", "QPROT", "Perseus")){
+                                       methods = c("proDA", "DEP", "QPROT", "Perseus", "DAPAR", "EBRCT")){
   run_tools(perc_changed, comparison, methods)$res_df %>%
     group_by(method) %>%
     do({tidy_FDR(., adj_pval, changed, ticks = ppoints(101) * 0.2)}) %>%
@@ -460,31 +506,25 @@ run_performance_comparison <- function(perc_changed, comparison,
       TRUE ~ method
     ))
 }
-
-
 ```
 
 
 
-
-
-
-
 ```{r}
-tp_df_5_6v6 <- run_performance_comparison(perc_changed = 0.05, comparison = "6v6", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
-tp_df_10_6v6 <- run_performance_comparison(perc_changed = 0.1, comparison = "6v6", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
-tp_df_20_6v6 <- run_performance_comparison(perc_changed = 0.2, comparison = "6v6", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
-tp_df_30_6v6 <- run_performance_comparison(perc_changed = 0.3, comparison = "6v6", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_5_6v6 <- run_performance_comparison(perc_changed = 0.05, comparison = "6v6")
+tp_df_10_6v6 <- run_performance_comparison(perc_changed = 0.1, comparison = "6v6")
+tp_df_20_6v6 <- run_performance_comparison(perc_changed = 0.2, comparison = "6v6")
+tp_df_30_6v6 <- run_performance_comparison(perc_changed = 0.3, comparison = "6v6")
 
-tp_df_5_4v4 <- run_performance_comparison(perc_changed = 0.05, comparison = "4v4", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
-tp_df_10_4v4 <- run_performance_comparison(perc_changed = 0.1, comparison = "4v4", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
-tp_df_20_4v4 <- run_performance_comparison(perc_changed = 0.2, comparison = "4v4", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
-tp_df_30_4v4 <- run_performance_comparison(perc_changed = 0.3, comparison = "4v4", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_5_4v4 <- run_performance_comparison(perc_changed = 0.05, comparison = "4v4")
+tp_df_10_4v4 <- run_performance_comparison(perc_changed = 0.1, comparison = "4v4")
+tp_df_20_4v4 <- run_performance_comparison(perc_changed = 0.2, comparison = "4v4")
+tp_df_30_4v4 <- run_performance_comparison(perc_changed = 0.3, comparison = "4v4")
 
-tp_df_5_3v3 <- run_performance_comparison(perc_changed = 0.05, comparison = "3v3", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
-tp_df_10_3v3 <- run_performance_comparison(perc_changed = 0.1, comparison = "3v3", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
-tp_df_20_3v3 <- run_performance_comparison(perc_changed = 0.2, comparison = "3v3", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
-tp_df_30_3v3 <- run_performance_comparison(perc_changed = 0.3, comparison = "3v3", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tp_df_5_3v3 <- run_performance_comparison(perc_changed = 0.05, comparison = "3v3")
+tp_df_10_3v3 <- run_performance_comparison(perc_changed = 0.1, comparison = "3v3")
+tp_df_20_3v3 <- run_performance_comparison(perc_changed = 0.2, comparison = "3v3")
+tp_df_30_3v3 <- run_performance_comparison(perc_changed = 0.3, comparison = "3v3")
 ```
 
 
@@ -613,7 +653,7 @@ Why do the tools differ?
 
 ```{r}
 
-tmp_res <- run_tools(perc_changed = 0.2, comparison = "3v3", methods = c("DEP", "proDA", "QPROT", "Perseus")) 
+tmp_res <- run_tools(perc_changed = 0.2, comparison = "3v3") 
 
 ```
 
@@ -637,12 +677,23 @@ tmp_res$res_df %>%
 ```
 
 
+
+
+
 ```{r}
 obs_df <- tibble(name = rownames(tmp_res$shuf_df$data),
                  Obs1 = rowSums(! is.na(tmp_res$shuf_df$data[, 1:3])),
                  Obs2 = rowSums(! is.na(tmp_res$shuf_df$data[, 4:6]))) %>%
   mutate(ObsLabel = paste0(pmin(Obs1, Obs2), "-", pmax(Obs1, Obs2))) %>%
   mutate(ObsLabel = fct_reorder2( factor(ObsLabel, levels = c("All-All", unique(ObsLabel))), -pmin(Obs1, Obs2), -pmax(Obs1, Obs2)))
+
+ref_df <- tibble(name = rownames(tmp_res$shuf_df$data), changed = tmp_res$shuf_df$changed) %>%
+  inner_join(obs_df) %>%
+  group_by(ObsLabel) %>%
+  summarize(TP = 0,
+            FP = 0,
+            MargT = sum(changed)) 
+
 
 tp_fp_per_obs_10 <- tmp_res$res_df %>%
   inner_join(obs_df) %>%
@@ -651,6 +702,10 @@ tp_fp_per_obs_10 <- tmp_res$res_df %>%
   summarize(TP = sum(changed & adj_pval < 0.1),
             FP = sum(!changed & adj_pval < 0.1),
             MargT = sum(changed)) %>%
+  group_by(method) %>%
+  group_map(function(df, key){
+    bind_rows(df, ref_df %>% filter(! ObsLabel %in% df$ObsLabel))
+  }) %>%
   bind_rows(tmp_res$res_df %>%
     distinct() %>%
     inner_join(obs_df) %>%
@@ -676,6 +731,10 @@ tp_fp_per_obs_01 <- tmp_res$res_df %>%
   summarize(TP = sum(changed & adj_pval < 0.01),
             FP = sum(!changed & adj_pval < 0.01),
             MargT = sum(changed)) %>%
+  group_by(method) %>%
+  group_map(function(df, key){
+    bind_rows(df, ref_df %>% filter(! ObsLabel %in% df$ObsLabel))
+  }) %>%
   bind_rows(tmp_res$res_df %>%
     distinct() %>%
     inner_join(obs_df) %>%
