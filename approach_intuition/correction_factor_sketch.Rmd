@@ -1,0 +1,43 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+Implement the outline for the sketch of how the symmetric approximation
+works and where the correction factor for the variance estimate comes from:
+
+```{r}
+
+xg <- seq(10, 20, length.out = 1001)
+skew_distr <- function(x){
+  dnorm(x, mean=15, sd=1.3, log=TRUE) + proDA::invprobit(x, 16, -0.8, log=TRUE)
+}
+y_dens <- skew_distr(xg)
+plot(xg, y_dens, type="n", lwd=3)
+
+mode <- xg[which.max(y_dens)]
+y_at_mode <- max(y_dens)
+
+var_at_mode <- 1.4
+y_approx <- dnorm(xg, mode, sd=sqrt(var_at_mode), log=TRUE)
+y_approx <- y_approx - (max(y_approx) - y_at_mode)
+y_approx2 <- dnorm(xg, mode, sd=sqrt(var_at_mode * 0.47), log=TRUE)
+y_approx2 <- y_approx2 - (max(y_approx2) - y_at_mode)
+
+segments(mode, y_at_mode, mode + 4, y_at_mode, col = "darkgrey", lwd=3)
+segments(mode + 4, dnorm(mode + 4, mode, sd=sqrt(var_at_mode), log=TRUE) - 0.1,
+         mode + 4, skew_distr(mode + 4), col = "orange", lwd=3)
+segments(mode + 4, y_at_mode, mode + 4, 
+         dnorm(mode + 4, mode, sd=sqrt(var_at_mode), log=TRUE), col = "grey", lwd=3)
+
+lines(xg, y_approx2, col="purple", lwd=3, lty = 2)
+lines(xg, y_approx, col="red", lwd=3)
+lines(xg, y_dens, col = "black", lwd=4)
+points(mode, max(y_dens), pch=16, cex=2)
+
+
+```
+
+
+The final edits to the sketch were made in Illustrator.
+
