@@ -1,0 +1,7 @@
+Name	Condition	Experiment	Fraction
+OR8_121123_EDG_PG_phosJurkat_0min_A1	B	1	1
+OR8_121123_EDG_PG_phosJurkat_0min_A2	A	2	1
+OR8_121123_EDG_PG_phosJurkat_0min_B3	B	6	1
+OR8_121123_EDG_PG_phosJurkat_0min_C1	B	7	1
+OR8_121123_EDG_PG_phosJurkat_0min_C2	A	8	1
+OR8_121123_EDG_PG_phosJurkat_0min_C3	A	9	1
