@@ -13,7 +13,7 @@ run_perseus <- function(data, tag="", return_null_if_missing = FALSE, dataset_na
       rownames_to_column("Name") %>%
       write_tsv(file.path(prefix_in, table_file_name))
   }
-  if(dataset_name == "de_graaf"){
+  if(dataset_name == "de_graaf" || dataset_name == "de_graaf/null_comparison"){
     pval_column_name <- "Student's T-test p-value Syn_Cond1_Syn_Cond2"
     qval_column_name <- "Student's T-test q-value Syn_Cond1_Syn_Cond2"
     diff_column_name <- "Student's T-test Difference Syn_Cond1_Syn_Cond2"
